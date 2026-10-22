@@ -1,0 +1,46 @@
+name: Docker Compose Integration Test
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  test-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 1. Собираем и запускаем стек в фоне
+      - name: Start services with Docker Compose
+        run: docker compose up -d --build
+
+      # 2. Ждём, пока веб-сервер пройдёт свой healthcheck (таймаут 60 секунд)
+      - name: Wait for web service to be healthy
+        run: |
+          timeout 60 sh -c 'until docker compose ps | grep -q "web.*healthy"; do sleep 2; done' || (docker compose logs web && exit 1)
+
+      # 3. Явно вызываем /health и проверяем ответ
+      - name: Verify database connection via /health endpoint
+        run: |
+          echo "=== Calling /health ==="
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" http://localhost:8000/health)
+          echo "$RESPONSE"
+          # Проверяем, что вернулся код 200
+          if ! echo "$RESPONSE" | grep -q "HTTP_CODE:200"; then
+            echo "Health check failed!"
+            docker compose logs web
+            exit 1
+          fi
+          echo "=== SUCCESS: Web server connected to PostgreSQL ==="
+
+      # 4. На всякий случай показываем логи всех сервисов
+      - name: Show logs
+        if: always()
+        run: docker compose logs
+
+      # 5. Останавливаем и удаляем контейнеры
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
